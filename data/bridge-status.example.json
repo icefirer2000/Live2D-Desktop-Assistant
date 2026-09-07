@@ -1,0 +1,16 @@
+{
+  "source": "本地桥接",
+  "updatedAt": "2026-09-05T00:00:00.000Z",
+  "usage": {
+    "short": { "label": "5 小时额度", "used": 54, "reset": "今天 21:26" },
+    "week": { "label": "1 周额度", "used": 65, "reset": "9 月 9 日 09:14" },
+    "credits": 0,
+    "resets": 1
+  },
+  "activities": [
+    { "title": "示例任务", "sub": "正在运行", "tag": "运行中", "tone": "run" }
+  ],
+  "permissions": [
+    { "title": "示例权限请求", "sub": "等待你的决定", "action": "查看" }
+  ]
+}

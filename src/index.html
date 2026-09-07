@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' live2d: http://127.0.0.1:* http://localhost:* https://127.0.0.1:* https://localhost:* https://cdn.jsdelivr.net https://cubism.live2d.com; img-src 'self' data: blob: live2d:; style-src 'self' 'unsafe-inline'; script-src 'self' https://cdn.jsdelivr.net https://cubism.live2d.com; worker-src 'self' blob:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live2D Desktop Assistant</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="modelStage" class="model-stage" aria-label="Live2D 宠物">
+        <div class="status-orbit orbit-a"></div>
+        <div class="status-orbit orbit-b"></div>
+        <button id="petButton" class="pet-button" aria-label="唤醒助手">
+          <canvas id="live2dCanvas" class="live2d-canvas" aria-hidden="true"></canvas>
+          <span id="petModel" class="pet-model" data-model="fallback">
+            <span class="antenna antenna-left"></span>
+            <span class="antenna antenna-right"></span>
+            <span class="pet-ear ear-left"></span>
+            <span class="pet-ear ear-right"></span>
+            <span class="pet-head">
+              <span class="pet-screen">
+                <span class="pet-eye eye-left"></span>
+                <span class="pet-eye eye-right"></span>
+                <span class="pet-mouth"></span>
+              </span>
+            </span>
+            <span class="pet-body">
+              <span class="pet-chest">✦</span>
+              <span class="pet-arm arm-left"></span>
+              <span class="pet-arm arm-right"></span>
+            </span>
+            <span class="pet-foot foot-left"></span>
+            <span class="pet-foot foot-right"></span>
+          </span>
+          <img id="customImage" class="custom-image" alt="自定义宠物" />
+          <span class="pet-glow"></span>
+          <span id="scaleHandle" class="scale-handle" title="拖动调整模型大小" aria-label="拖动调整模型大小">↗</span>
+        </button>
+        <div id="modelLabel" class="model-label">Codey · Live2D 演示模型</div>
+        <div id="modelStatus" class="model-status hidden" role="status"></div>
+      </section>
+
+      <section id="bubble" class="bubble hidden" aria-live="polite">
+        <div class="bubble-tail"></div>
+        <div class="bubble-drag-handle" aria-hidden="true"></div>
+        <button id="closeBubble" class="icon-button bubble-close-button" aria-label="关闭">×</button>
+        <div class="bubble-main">
+          <div class="welcome-copy">
+            <h1 id="greeting">未来来啦♪</h1>
+            <p id="greetingSub">今天也要一起把灵感唱出来吗？</p>
+          </div>
+          <div id="menuView" class="menu-grid welcome-actions" aria-label="助手功能">
+            <button class="menu-card accent" data-view="usage"><span class="menu-icon">◒</span><span>看用量</span><small>额度与重置</small></button>
+            <button class="menu-card" data-view="activity"><span class="menu-icon">✦</span><span>看聊天</span><small>运行中的任务</small></button>
+            <button class="menu-card" data-view="permissions"><span class="menu-icon">✓</span><span>权限请求</span><small>需要你的决定</small></button>
+            <button class="menu-card" data-view="settings"><span class="menu-icon">⚙</span><span>调整外观</span><small>模型与数据</small></button>
+          </div>
+          <div id="detailView" class="detail-view hidden"></div>
+        </div>
+        <div id="actionToolbar" class="action-toolbar" aria-label="模型动作选择"></div>
+        <div class="bubble-footer"><span class="live-dot"></span><span id="sourceStatus">演示数据 · 刚刚更新</span><button id="refreshButton" class="text-button">刷新</button></div>
+        <span id="bubbleResizeHandle" class="bubble-resize-handle" title="拖动调整对话框大小" aria-label="拖动调整对话框大小">⌟</span>
+      </section>
+      <div class="window-resize-zones" aria-hidden="true">
+        <span class="window-resize-zone window-resize-n" data-edge="n"></span>
+        <span class="window-resize-zone window-resize-e" data-edge="e"></span>
+        <span class="window-resize-zone window-resize-s" data-edge="s"></span>
+        <span class="window-resize-zone window-resize-w" data-edge="w"></span>
+        <span class="window-resize-zone window-resize-ne" data-edge="ne"></span>
+        <span class="window-resize-zone window-resize-se" data-edge="se"></span>
+        <span class="window-resize-zone window-resize-sw" data-edge="sw"></span>
+        <span class="window-resize-zone window-resize-nw" data-edge="nw"></span>
+      </div>
+      <div id="desktopBorder" class="desktop-border" aria-hidden="true"></div>
+    </main>
+    <input id="modelFile" type="file" accept="image/png,image/webp,image/jpeg,.json,.model3.json" hidden />
+    <script src="./data-provider.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

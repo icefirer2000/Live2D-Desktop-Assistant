@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live2D Desktop Assistant 设置</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <main class="settings-shell">
+      <header class="titlebar">
+        <div class="brand-mark">✦</div>
+        <div><div class="title">Live2D Desktop Assistant</div><div class="subtitle">首次启动设置 · 桌面宠物偏好</div></div>
+        <button id="closeButton" class="window-button" aria-label="关闭设置">×</button>
+      </header>
+      <div class="content">
+        <aside class="sidebar">
+          <div class="side-label">SETUP</div>
+          <button class="side-link active">基础设置</button>
+          <button class="side-link">模型外观</button>
+          <button class="side-link">数据与隐私</button>
+          <div class="side-tip"><span class="tip-dot"></span><span>助手会以透明悬浮层运行，不遮挡桌面内容。</span></div>
+        </aside>
+        <section class="form-area">
+          <div class="hero"><span class="hero-kicker">WELCOME BACK</span><h1>先把助手调成你喜欢的样子。</h1><p>这些设置会保存到本机，之后可以从宠物菜单再次打开。</p></div>
+          <div class="section-card">
+            <div class="section-heading"><span><b>模型与显示</b><small>控制宠物的外观与存在感</small></span><span class="section-number">01</span></div>
+            <div class="form-row"><label for="modelName">当前模型</label><div class="control-pair"><input id="modelName" type="text" readonly /><button id="importButton" class="outline-button">导入</button></div></div>
+            <div class="form-row"><label for="opacity">透明度</label><div class="range-pair"><input id="opacity" type="range" min="0.35" max="1" step="0.05" /><output id="opacityValue">100%</output></div></div>
+            <div class="form-row"><span class="label-text">始终置顶</span><label class="switch"><input id="alwaysOnTop" type="checkbox" /><span></span></label></div>
+            <div class="form-row"><span class="label-text">打开可见桌宠边框</span><label class="switch"><input id="showDesktopBorder" type="checkbox" /><span></span></label></div>
+          </div>
+          <div class="section-card">
+            <div class="section-heading"><span><b>数据刷新</b><small>第一版默认使用本地演示数据</small></span><span class="section-number">02</span></div>
+            <div class="form-row"><label for="refreshMinutes">刷新间隔</label><select id="refreshMinutes"><option value="1">每 1 分钟</option><option value="5">每 5 分钟</option><option value="15">每 15 分钟</option></select></div>
+            <div class="source-note"><span class="source-icon">◒</span><div><b>本地模型导入</b><p>选择完整的 .model3.json 后，助手会从同一文件夹读取 moc3、纹理和物理文件。</p></div></div>
+          </div>
+          <footer class="actions"><span id="savedState">尚未保存</span><div><button id="laterButton" class="ghost-button">稍后设置</button><button id="saveButton" class="primary-button">保存并开始</button></div></footer>
+        </section>
+      </div>
+    </main>
+    <input id="modelFile" type="file" accept="image/png,image/webp,image/jpeg,.json,.model3.json" hidden />
+    <script src="./settings.js"></script>
+  </body>
+</html>

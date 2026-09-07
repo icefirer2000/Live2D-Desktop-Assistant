@@ -1,0 +1,30 @@
+{
+  "name": "live2d-desktop-assistant",
+  "version": "1.0.2",
+  "description": "A transparent Live2D-style desktop companion for ChatGPT Desktop.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack": "electron-builder --dir",
+    "pack:portable": "electron-builder --win portable --publish never"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "@pixi/unsafe-eval": "^6.5.10",
+    "pixi.js": "^6.5.10",
+    "pixi-live2d-display": "^0.4.0"
+  },
+  "build": {
+    "appId": "local.codex.live2d.assistant",
+    "productName": "Live2D Desktop Assistant",
+    "files": ["main.js", "preload.js", "src/**/*", "data/**/*", "runtime/**/*", "miku/**/*"],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
