@@ -1,8 +1,12 @@
+const isBubbleSurface = new URLSearchParams(location.search).get('surface') === 'bubble';
+document.body.classList.toggle('bubble-surface', isBubbleSurface);
+document.title = isBubbleSurface ? 'Live2D Assistant · 聊天框' : 'Live2D Assistant · 桌面模型';
+const motionManager = new window.MotionManager();
 const state = {
   config: {},
   currentView: 'menu',
-  modelFileName: 'Codey · 内置演示模型',
-  modelMode: 'fallback',
+  modelFileName: '尚未选择模型',
+  modelMode: 'none',
   modelPath: '',
   usage: {
     short: { label: '5 小时额度', used: 54, reset: '今天 21:26' },
@@ -158,22 +162,18 @@ async function ensureLive2DRuntime() {
   runtimePromise = (async () => {
     await loadScriptCandidates([
       '../node_modules/pixi.js/dist/browser/pixi.min.js',
-      '../runtime/pixi.min.js',
-      'https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js'
+      '../runtime/pixi.min.js'
     ], () => Boolean(window.PIXI), 'Pixi');
     await loadOptionalScriptCandidates([
       '../node_modules/@pixi/unsafe-eval/dist/browser/unsafe-eval.min.js',
-      '../runtime/unsafe-eval.min.js',
-      'https://cdn.jsdelivr.net/npm/@pixi/unsafe-eval@6.5.10/dist/unsafe-eval.min.js'
+      '../runtime/unsafe-eval.min.js'
     ], 'Pixi unsafe-eval');
     await loadScriptCandidates([
-      '../runtime/live2dcubismcore.min.js',
-      'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js'
+      '../runtime/live2dcubismcore.min.js'
     ], () => Boolean(window.Live2DCubismCore), 'Cubism Core');
     await loadScriptCandidates([
       '../node_modules/pixi-live2d-display/dist/cubism4.min.js',
-      '../runtime/pixi-live2d-display-cubism4.min.js',
-      'https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js'
+      '../runtime/pixi-live2d-display-cubism4.min.js'
     ], () => Boolean(window.PIXI?.live2d?.Live2DModel), 'Live2D 插件');
     if (!window.PIXI?.live2d?.Live2DModel) throw new Error('Live2D 渲染插件未就绪');
   })().catch((error) => {
@@ -194,20 +194,8 @@ function actionKey(action) {
 }
 
 function getActionOptions(descriptor) {
-  const labels = { QQ人: '哭哭', 葱: '拿葱', Scene1: '大小变' };
-  const expressions = Array.isArray(descriptor?.actions?.expressions) ? descriptor.actions.expressions : [];
-  const motions = Array.isArray(descriptor?.actions?.motions) ? descriptor.actions.motions : [];
-  return [
-    ...expressions
-      .filter((entry) => entry && entry.Name && entry.Name !== '水印')
-      .map((entry) => ({ type: 'expression', id: entry.Name, label: labels[entry.Name] || entry.Name })),
-    ...motions
-      .filter((entry) => entry && entry.file)
-      .map((entry) => {
-        const name = entry.file.replace(/\.motion3\.json$/i, '');
-        return { type: 'motion', group: entry.group, index: entry.index, label: labels[name] || name };
-      })
-  ];
+  return [...(descriptor?.actions?.expressions || []).map(e => ({ type: 'expression', id: e.Name, label: e.Name })),
+    ...(descriptor?.actions?.motions || []).map(e => ({ type: 'motion', group: e.group, index: e.index, label: e.name || e.file }))];
 }
 
 function renderActionPicker() {
@@ -229,20 +217,12 @@ function setActionOptions(descriptor) {
   renderActionPicker();
 }
 
-function playAction(action) {
-  if (!live2dModel || !action) return false;
+async function playAction(action, loop = false) {
   try {
-    const result = action.type === 'motion'
-      ? live2dModel.motion(action.group, action.index)
-      : live2dModel.expression(action.id);
-    if (result && typeof result.catch === 'function') result.catch((error) => console.warn('Live2D 动作播放失败', error));
-    state.currentAction = action;
-    renderActionPicker();
-    return true;
-  } catch (error) {
-    console.warn('Live2D 动作播放失败', error);
-    return false;
-  }
+    if (isBubbleSurface) return await window.desktopAPI.playAction(action, loop);
+    const result = await motionManager.play(action, loop);
+    state.currentAction = action; renderActionPicker(); return result;
+  } catch (error) { setModelStatus(error.message, true); if (!isBubbleSurface) await window.desktopAPI.reportMotion({ ok: false, message: error.message }); return false; }
 }
 
 function normalizeBubblePosition(position) {
@@ -262,6 +242,7 @@ function normalizeBubbleSize(size) {
 }
 
 function applyBubbleSize() {
+  if (isBubbleSurface) return;
   if (!bubble) return;
   // A dialog is a fixed-size surface. Its own resize handle changes this
   // state; desktop-window resizes must never scale it down to fit.
@@ -293,6 +274,7 @@ function clampBubblePosition(x, y) {
 }
 
 function applyBubblePosition() {
+  if (isBubbleSurface) return;
   const next = clampBubblePosition(state.bubblePosition.x, state.bubblePosition.y);
   state.bubblePosition = next;
   state.config.bubblePosition = { ...next };
@@ -360,18 +342,17 @@ function updateModelScaleUI() {
 }
 
 function disposeLive2D() {
+  motionManager.attach(null);
   if (live2dModel) {
+    pixiApp?.stage.removeChild(live2dModel);
     live2dModel.destroy({ children: true, texture: true, baseTexture: true });
     live2dModel = null;
   }
-  if (pixiApp) {
-    pixiApp.destroy(true, { children: true, texture: true, baseTexture: true });
-    pixiApp = null;
-  }
+  // Reuse the WebGL surface: destroying it invalidates the context on this canvas.
   live2dNaturalSize = { width: 1, height: 1 };
   live2dCenterOffsetRatio = 0;
   live2dCanvas.classList.remove('visible');
-  petModel.classList.remove('live2d-hidden');
+  petModel.classList.add('live2d-hidden');
   setModelStatus('', false);
 }
 
@@ -389,7 +370,7 @@ function resizeLive2D() {
   const naturalHeight = Math.max(live2dNaturalSize.height, 1);
   // Calibrate once against the intended model surface, rather than the
   // current window. A native window resize should not change model scale.
-  const fitScale = getLive2DFitScale(360, 500);
+  const fitScale = getLive2DFitScale(width / MODEL_SCALE_MAX, height / MODEL_SCALE_MAX);
   const safeMax = getModelScaleLimit();
   state.modelScale = clamp(Number(state.modelScale) || 1, MODEL_SCALE_MIN, safeMax);
   document.documentElement.style.setProperty('--model-scale', state.modelScale.toFixed(3));
@@ -410,14 +391,14 @@ async function showLive2DModel(descriptor, persist = true) {
   try {
     await ensureLive2DRuntime();
     disposeLive2D();
-    pixiApp = new window.PIXI.Application({
+    if (!pixiApp) pixiApp = new window.PIXI.Application({
       view: live2dCanvas,
       width: 264,
       height: 360,
       transparent: true,
       backgroundAlpha: 0,
       antialias: true,
-      resolution: 1,
+      resolution: Math.min(window.devicePixelRatio || 1, 2),
       autoDensity: true
     });
     // Keep Live2D animated while avoiding a full-rate software-rendering loop.
@@ -428,6 +409,7 @@ async function showLive2DModel(descriptor, persist = true) {
     // action explicitly can still turn the effect on.
     try { live2dModel.internalModel?.coreModel?.setParameterValueById?.('Param125', 0); } catch { /* optional model parameter */ }
     lastModelDescriptor = descriptor;
+    motionManager.attach(live2dModel);
     live2dNaturalSize = { width: Math.max(live2dModel.width, 1), height: Math.max(live2dModel.height, 1) };
     live2dCenterOffsetRatio = /^miku$/i.test(String(descriptor.modelName || '')) ? 0.18 : 0;
     setActionOptions(descriptor);
@@ -458,6 +440,7 @@ async function showLive2DModel(descriptor, persist = true) {
 }
 
 function openBubble() {
+  if (!isBubbleSurface) { void window.desktopAPI.showBubble(); return; }
   if (!bubble || !bubble.classList.contains('hidden')) return;
   applyBubbleFade();
   applyBubbleSize();
@@ -469,12 +452,13 @@ function openBubble() {
     bubble.classList.add('bubble-appearing');
   }
   const welcome = MIKU_GREETINGS[Math.floor(Math.random() * MIKU_GREETINGS.length)];
-  setGreeting(welcome.title, welcome.sub);
+  setGreeting('你好，欢迎回来', `${state.config.modelName || '桌面伙伴'} · ${welcome.sub}`);
   showMenu();
   window.requestAnimationFrame(applyBubblePosition);
 }
 
 function closeBubble() {
+  if (isBubbleSurface) void window.desktopAPI.hideBubble();
   bubble.classList.remove('bubble-appearing');
   bubble.classList.add('hidden');
   showMenu();
@@ -495,8 +479,8 @@ function renderUsage() {
   const shortRemain = 100 - state.usage.short.used;
   const weekRemain = 100 - state.usage.week.used;
   detailView.innerHTML = `${detailHeader('剩余用量')}
-    <div class="meter-block"><div class="meter-meta"><span>${state.usage.short.label} · 剩余</span><strong>${shortRemain}%</strong></div><div class="meter"><i style="width:${shortRemain}%"></i></div><div class="meter-meta"><span>重置时间</span><span>${state.usage.short.reset}</span></div></div>
-    <div class="meter-block"><div class="meter-meta"><span>${state.usage.week.label} · 剩余</span><strong>${weekRemain}%</strong></div><div class="meter"><i style="width:${weekRemain}%"></i></div><div class="meter-meta"><span>重置时间</span><span>${state.usage.week.reset}</span></div></div>
+    <div class="meter-block"><div class="meter-meta"><span>${escapeHTML(state.usage.short.label)} · 剩余</span><strong>${shortRemain}%</strong></div><div class="meter"><i style="width:${shortRemain}%"></i></div><div class="meter-meta"><span>重置时间</span><span>${escapeHTML(state.usage.short.reset)}</span></div></div>
+    <div class="meter-block"><div class="meter-meta"><span>${escapeHTML(state.usage.week.label)} · 剩余</span><strong>${weekRemain}%</strong></div><div class="meter"><i style="width:${weekRemain}%"></i></div><div class="meter-meta"><span>重置时间</span><span>${escapeHTML(state.usage.week.reset)}</span></div></div>
     <div class="data-note">软件 Credits：<strong>${state.usage.credits}</strong> · 可用完整重置：<strong>${state.usage.resets}</strong> 次<br/>数据源：<strong>${escapeHTML(state.dataSource)}</strong> · 更新时间：${new Date(state.snapshotUpdatedAt || Date.now()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</div>`;
   setGreeting('用量看板', '这是当前助手缓存的额度快照。');
 }
@@ -515,7 +499,7 @@ function renderPermissions() {
 
 function renderSettings() {
   const cfg = state.config;
-  const modelType = state.modelMode === 'live2d' ? '真实 Live2D 模型' : (state.modelMode === 'image' ? '图片预览' : '内置演示模型');
+  const modelType = state.modelMode === 'live2d' ? '真实 Live2D 模型' : (state.modelMode === 'image' ? '图片预览' : '尚未选择模型');
   detailView.innerHTML = `${detailHeader('设置模型')}
     <div class="setting-row"><span>当前模型</span><strong>${escapeHTML(state.modelFileName)}</strong></div>
     <div class="setting-row"><span>显示方式</span><strong>${modelType}</strong></div>
@@ -554,7 +538,7 @@ async function refreshData(showError = false) {
     if (state.currentView === 'activity') renderActivity();
     if (state.currentView === 'permissions') renderPermissions();
   } catch (error) {
-    state.dataSource = '演示数据（桥接失败）';
+    state.dataSource = '桥接不可用（保留上次快照）';
     sourceStatus.textContent = `桥接失败 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
     if (showError) setGreeting('数据暂时不可用。', error.message || '已保留上一次快照。');
     console.warn('数据源刷新失败，继续使用当前快照', error);
@@ -582,18 +566,15 @@ function handleCommand(value) {
 }
 
 async function saveConfig() {
-  if (window.desktopAPI) state.config = await window.desktopAPI.saveConfig(state.config);
+  if (window.desktopAPI) {
+    const keys = ['modelScale', 'modelPosition', 'alwaysOnTop'];
+    state.config = await window.desktopAPI.saveConfig(Object.fromEntries(keys.map(key => [key, state.config[key]])));
+  }
 }
 
 let windowDragState = null;
 
-function canBeginWholeLayoutDrag(target) {
-  if (target === modelStage) return true;
-  if (!isLayoutLocked()) return false;
-  if (target.closest('input, select, textarea, [data-model-action], .bubble-resize-handle, .scale-handle')) return false;
-  if (target.closest('#petButton')) return true;
-  return Boolean(target.closest('#bubble')) && !target.closest('button');
-}
+function canBeginWholeLayoutDrag(target) { return !isLayoutLocked() && target === modelStage; }
 
 function beginPeripheralWindowDrag(event) {
   // Unlocked: only uncovered stage drags the native window. Locked: Miku and
@@ -695,12 +676,14 @@ function flushModelPosition() {
 
 function beginPetDrag(event) {
   if (event.button !== 0 || isLayoutLocked()) return;
+  window.desktopAPI.beginWindowDrag();
   if (dragState) return;
   dragState = {
     pointerId: event.pointerId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     startPosition: { ...state.modelPosition },
+    startScreenX: event.screenX, startScreenY: event.screenY,
     moved: false
   };
   document.body.classList.add('dragging');
@@ -710,19 +693,12 @@ function beginPetDrag(event) {
 
 function trackPetDrag(event) {
   if (!dragState || event.pointerId !== dragState.pointerId) return;
-  const dx = event.clientX - dragState.startClientX;
-  const dy = event.clientY - dragState.startClientY;
-  if (!dragState.moved && Math.hypot(dx, dy) < 4) return;
-  dragState.moved = true;
-  pendingModelPosition = clampModelPosition({
-    x: dragState.startPosition.x + dx,
-    y: dragState.startPosition.y + dy
-  });
-  if (!modelDragFrame) modelDragFrame = window.requestAnimationFrame(flushModelPosition);
+  if (Math.hypot(event.screenX - dragState.startScreenX, event.screenY - dragState.startScreenY) >= 4) dragState.moved = true;
   event.preventDefault();
 }
 
 function finishPetDrag(event) {
+  window.desktopAPI.endWindowDrag();
   if (!dragState || event.pointerId !== dragState.pointerId) return;
   if (modelDragFrame) {
     window.cancelAnimationFrame(modelDragFrame);
@@ -744,6 +720,7 @@ function finishPetDrag(event) {
 }
 
 function cancelPetDrag(event) {
+  window.desktopAPI.endWindowDrag();
   if (modelDragFrame) {
     window.cancelAnimationFrame(modelDragFrame);
     flushModelPosition();
@@ -1016,58 +993,14 @@ document.addEventListener('click', (event) => {
   if (menu) showDetail(menu.dataset.view);
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'back') showMenu();
-  if (action === 'import-model') $('#modelFile').click();
+  if (action === 'import-model') window.desktopAPI.openSettings();
   if (action === 'open-chat') window.desktopAPI?.openChatGPT();
   if (action === 'open-settings-window') window.desktopAPI?.openSettings();
   if (action === 'toggle-top') {
     state.config.alwaysOnTop = state.config.alwaysOnTop === false;
     saveConfig().then(() => renderSettings());
   }
-  if (action === 'reset-model') {
-    localStorage.removeItem('customModelImage');
-    void (async () => {
-      try {
-        const defaultPath = await window.desktopAPI?.getDefaultModelPath?.();
-        const descriptor = await window.desktopAPI?.loadLive2DModel?.(defaultPath);
-        if (descriptor) await showLive2DModel(descriptor, true);
-      } catch (error) {
-        console.error(error);
-        applyModel('miku', 'fallback', null);
-      }
-      renderSettings();
-    })();
-  }
-});
-
-$('#modelFile').addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  if (/\.model3\.json$/i.test(file.name)) {
-    if (!window.desktopAPI) {
-      setModelStatus('请在桌面程序中导入', true);
-    } else {
-      try {
-        const filePath = window.desktopAPI.getFilePath(file);
-        const descriptor = await window.desktopAPI.loadLive2DModel(filePath);
-        await showLive2DModel(descriptor, true);
-        if (state.currentView === 'settings') renderSettings();
-      } catch (error) {
-        console.error(error);
-      }
-    }
-  } else if (file.type.startsWith('image/')) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      applyModel(file.name.replace(/\.[^.]+$/, ''), 'image', reader.result);
-      if (state.currentView === 'settings') renderSettings();
-    };
-    reader.readAsDataURL(file);
-  } else {
-    applyModel(file.name, 'model-package', null);
-    setGreeting('模型包已记录', '当前第一版会保留模型包名称，并继续显示演示角色。');
-    if (state.currentView === 'settings') renderSettings();
-  }
-  event.target.value = '';
+  if (action === 'reset-model') window.desktopAPI.openSettings();
 });
 
 window.addEventListener('resize', () => {
@@ -1076,64 +1009,88 @@ window.addEventListener('resize', () => {
   applyModelPosition();
   resizeLive2D();
 });
-window.desktopAPI?.onConfigUpdated(async (config) => {
-  const previousMode = state.modelMode;
-  const previousPath = state.modelPath;
-  state.config = config || {};
-  applyDesktopBorder(state.config);
-  applyLayoutLock(state.config);
-  applyBubbleFade(state.config);
-  loadBubbleSize(state.config);
-  loadBubblePosition(state.config);
-  loadModelPosition(state.config);
-  state.modelScale = clamp(Number(state.config.modelScale) || state.modelScale || 1, MODEL_SCALE_MIN, getModelScaleLimit());
-  updateModelScaleUI();
-  scheduleRefresh();
-  await refreshData(false);
-  const nextMode = state.config.modelMode || 'fallback';
-  const modelChanged = previousMode !== nextMode || previousPath !== (state.config.modelPath || '');
-  if (modelChanged && nextMode === 'live2d' && state.config.modelPath) {
+let loadQueue = Promise.resolve(), requestedLoad = 0, loadedId = null;
+function reportAnchor() {
+  if (isBubbleSurface) return;
+  const rect = petButton.getBoundingClientRect();
+  let headY = rect.top + rect.height * .12;
+  if (live2dModel) headY = rect.top + live2dModel.y - live2dNaturalSize.height * live2dModel.scale.y;
+  void window.desktopAPI.reportAnchor({ x: rect.left + rect.width / 2, y: Math.max(0, headY) });
+}
+function applyChatStyle() {
+  const c = state.config;
+  document.body.dataset.theme = c.theme;
+  bubble.style.borderRadius = c.bubbleRadius + 'px';
+  const color = c.bubbleColor || '#f7faff';
+  const rgb = [1,3,5].map(i => parseInt(color.slice(i,i+2),16));
+  bubble.style.background = 'rgba(' + rgb.join(',') + ',' + c.bubbleOpacity + ')';
+  bubble.style.boxShadow = c.bubbleShadow ? 'inset 0 0 0 1px #abc2da55, 0 3px 12px #17355622' : 'none';
+  bubble.style.setProperty('--chat-font', (c.bubbleFontSize || 14) + 'px');
+  applyBubbleFade();
+}
+async function syncModel(force = false) {
+  const id = state.config.selectedModelId || '';
+  if (!force && id === loadedId) return;
+  const request = ++requestedLoad;
+  loadQueue = loadQueue.catch(() => {}).then(async () => {
+    if (request !== requestedLoad) return;
+    disposeLive2D(); customImage.classList.remove('visible');
+    state.actionOptions = []; renderActionPicker();
+    petModel.classList.add('live2d-hidden');
+    state.modelFileName = state.config.modelName || '尚未选择模型';
+    state.modelMode = state.config.modelMode; state.modelPath = state.config.modelPath;
+    if (!id) { loadedId = ''; if (!isBubbleSurface) setModelStatus('尚未选择模型 · 请在控制面板导入'); return; }
     try {
-      const descriptor = await window.desktopAPI.loadLive2DModel(state.config.modelPath);
-      await showLive2DModel(descriptor, false);
-    } catch (error) {
-      console.error(error);
-    }
-  } else if (modelChanged && nextMode !== 'image') {
-    applyModel(state.config.modelName || 'Codey · 内置演示模型', nextMode, null, false);
-  }
-});
-
+      const descriptor = await window.desktopAPI.modelDescriptor(id);
+      if (request !== requestedLoad) return;
+      if (isBubbleSurface) { setActionOptions(descriptor); loadedId = id; return; }
+      if (descriptor.type === 'image') { customImage.src = descriptor.modelUrl; customImage.classList.add('visible'); setModelStatus('', false); }
+      else await showLive2DModel(descriptor, false);
+      loadedId = id; reportAnchor();
+      if (state.config.bubbleDisplay === 'always') void window.desktopAPI.showBubble();
+    } catch (error) { loadedId = null; setModelStatus(error.message, true); if (!isBubbleSurface) await window.desktopAPI.reportMotion({ ok:false, message:error.message }); else sourceStatus.textContent = error.message; }
+  });
+  return loadQueue;
+}
+function applyConfig(config) {
+  state.config = config;
+  applyDesktopBorder(config); applyLayoutLock(config); applyChatStyle();
+  loadBubbleSize(config); loadBubblePosition(config); loadModelPosition(config);
+  state.modelScale = config.modelScale || 1; updateModelScaleUI();
+  scheduleRefresh(); reportAnchor();
+  void syncModel();
+}
+window.desktopAPI.onConfigUpdated(config => { applyConfig(config); });
+window.desktopAPI.onReloadModel(() => syncModel(true));
+window.desktopAPI.onLibraryUpdated(() => { if (isBubbleSurface) void syncModel(true); });
+window.desktopAPI.onPlayAction(({ action, loop }) => { void playAction(action, loop); });
+window.desktopAPI.onStopAction(() => { motionManager.stop(); state.currentAction = null; renderActionPicker(); void window.desktopAPI.reportMotion({ ok:true, message:'已停止动作与表情' }); });
+window.desktopAPI.onBubbleOpen(() => { bubble.classList.add('hidden'); openBubble(); });
+window.desktopAPI.onMotionStatus(s => { if (isBubbleSurface) sourceStatus.textContent = s.message; });
+window.addEventListener('resize', reportAnchor);
+window.addEventListener('blur', () => { window.desktopAPI.endWindowDrag(); });
+if (isBubbleSurface) {
+  const setup = (element, resize) => {
+    let pointer = null;
+    element.addEventListener('pointerdown', e => {
+      if (isLayoutLocked() || e.button !== 0) return;
+      pointer = e.pointerId; element.setPointerCapture(pointer);
+      if (resize) void window.desktopAPI.beginWindowResize('se'); else window.desktopAPI.beginWindowDrag();
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, true);
+    element.addEventListener('pointermove', e => {
+      if (e.pointerId !== pointer) return;
+      if (resize) window.desktopAPI.resizeWindow({ cursorX: e.screenX, cursorY: e.screenY });
+      e.stopImmediatePropagation();
+    }, true);
+    const finish = e => { if (pointer !== e.pointerId) return; pointer = null; if (resize) void window.desktopAPI.endWindowResize(); else window.desktopAPI.endWindowDrag(); e.stopImmediatePropagation(); };
+    element.addEventListener('pointerup', finish, true); element.addEventListener('pointercancel', finish, true);
+  };
+  setup(bubbleTopline, false); setup(bubbleResizeHandle, true);
+}
 (async function init() {
-  state.config = window.desktopAPI ? await window.desktopAPI.getConfig() : {};
-  applyDesktopBorder(state.config);
-  applyLayoutLock(state.config);
-  applyBubbleFade(state.config);
-  loadBubbleSize(state.config);
-  loadBubblePosition(state.config);
-  loadModelPosition(state.config);
-  state.modelScale = clamp(Number(state.config.modelScale) || 1, MODEL_SCALE_MIN, getModelScaleLimit());
-  updateModelScaleUI();
-  scheduleRefresh();
-  const savedImage = localStorage.getItem('customModelImage');
-  const previewModel = new URLSearchParams(window.location.search).get('previewModel');
-  if (state.config.modelMode === 'live2d' && state.config.modelPath && window.desktopAPI) {
-    try {
-      const descriptor = await window.desktopAPI.loadLive2DModel(state.config.modelPath);
-      await showLive2DModel(descriptor, false);
-    } catch (error) {
-      console.error(error);
-    }
-  } else if (state.config.modelName && state.config.modelMode === 'image' && savedImage) {
-    applyModel(state.config.modelName, state.config.modelMode, savedImage, false);
-  } else if (state.config.modelName && state.config.modelMode === 'model-package') {
-    applyModel(state.config.modelName, state.config.modelMode, null, false);
-  } else if (previewModel) {
-    try {
-      await showLive2DModel({ modelUrl: new URL(previewModel, window.location.href).href, modelPath: previewModel, modelName: 'Miku · 本地预览' }, false);
-    } catch (error) {
-      console.error(error);
-    }
-  }
+  applyConfig(await window.desktopAPI.getConfig());
+  await loadQueue;
+  if (isBubbleSurface) openBubble();
   await refreshData(false);
-})();
+})().catch(error => setModelStatus(error.message));

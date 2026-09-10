@@ -1,7 +1,15 @@
-const { app, BrowserWindow, ipcMain, shell, screen, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, screen, protocol, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
+const { SettingsStore, defaults } = require('./src/settings-store');
+const { ModelManager } = require('./src/model-manager');
+const actionCatalog = require('./src/action-catalog');
+const { responsiveScale } = require('./src/responsive-scale');
+const { clampBounds, bubbleBounds } = require('./src/layout-manager');
+if (process.env.LDA_TEST_PROFILE) app.setPath('userData', path.resolve(process.env.LDA_TEST_PROFILE));
+let settingsStore, modelManager, bubbleWindow;
+let modelAnchor = null, arrangingBubble = false;
+let motionStatus = { ok: true, message: '尚未播放动作' };
 
 // Keep WebGL available on machines where Chromium blocks the GPU; Live2D needs a WebGL context.
 app.commandLine.appendSwitch('enable-unsafe-swiftshader');
@@ -16,7 +24,6 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow;
 let settingsWindow;
-const live2dRoots = new Map();
 const nativeDragSessions = new Map();
 const pendingWindowSizes = new Map();
 const windowSizeTimers = new Map();
@@ -24,6 +31,84 @@ const windowResizeSessions = new Map();
 let nativeWindowSizeTimer = null;
 const MAIN_WINDOW_SIZE = Object.freeze({ width: 460, height: 640 });
 const MAIN_WINDOW_LIMITS = Object.freeze({ minWidth: 320, minHeight: 420 });
+const SETTINGS_WINDOW_SIZE = Object.freeze({ width: 1100, height: 760 });
+const RESPONSIVE_BASE_DISPLAY = Object.freeze({ width: 1920, height: 1080 });
+const RESPONSIVE_SCALE_LIMITS = Object.freeze({ min: 0.72, max: 1.35 });
+let mainWindowResponsiveScale = 1;
+let settingsWindowResponsiveScale = 1;
+let responsiveScaleTimer = null;
+
+const getResponsiveScale = responsiveScale;
+
+function scaleWindowSize(size, scale, fallback) {
+  const normalized = fallback ? { ...fallback } : normalizeWindowSize(size);
+  const factor = Number.isFinite(Number(scale)) ? Number(scale) : 1;
+  return {
+    width: Math.round(normalized.width * factor),
+    height: Math.round(normalized.height * factor)
+  };
+}
+
+function getDisplayForWindow(win) {
+  if (!win || win.isDestroyed()) return screen.getPrimaryDisplay();
+  return screen.getDisplayMatching(win.getBounds());
+}
+
+function getWindowResponsiveScale(win) {
+  if (win === mainWindow) return mainWindowResponsiveScale || 1;
+  if (win === settingsWindow) return settingsWindowResponsiveScale || 1;
+  if (win === bubbleWindow) return getResponsiveScale(getDisplayForWindow(mainWindow));
+  return 1;
+}
+
+function applyWebContentsScale(win, scale) {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  try { win.webContents.setZoomFactor(scale); } catch { /* page may still be initializing */ }
+}
+
+function scheduleResponsiveScaleUpdate() {
+  if (responsiveScaleTimer) return;
+  responsiveScaleTimer = setImmediate(() => {
+    responsiveScaleTimer = null;
+    applyMainWindowResponsiveScale();
+    applySettingsWindowResponsiveScale();
+    placeBubble();
+  });
+}
+
+function applyMainWindowResponsiveScale(force = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const nextScale = getResponsiveScale(getDisplayForWindow(mainWindow));
+  const previousScale = mainWindowResponsiveScale || 1;
+  mainWindowResponsiveScale = nextScale;
+  applyWebContentsScale(mainWindow, nextScale);
+  mainWindow.setMinimumSize(Math.round(320 * nextScale), Math.round(420 * nextScale));
+  if (!force && Math.abs(nextScale - previousScale) < 0.001) {
+    const bounds = mainWindow.getBounds(), safe = clampBounds(bounds, getDisplayForWindow(mainWindow).workArea);
+    if (Object.keys(safe).some(k => safe[k] !== bounds[k])) mainWindow.setBounds(safe, false);
+    return;
+  }
+  const config = readConfig();
+  const nextSize = scaleWindowSize(config.windowSize, nextScale);
+  const [width, height] = mainWindow.getSize();
+  if (Math.abs(width - nextSize.width) > 1 || Math.abs(height - nextSize.height) > 1) {
+    mainWindow.setBounds(clampBounds({ ...mainWindow.getBounds(), ...nextSize }, getDisplayForWindow(mainWindow).workArea), false);
+  }
+}
+
+function applySettingsWindowResponsiveScale(force = false) {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  const nextScale = getResponsiveScale(getDisplayForWindow(settingsWindow));
+  const previousScale = settingsWindowResponsiveScale || 1;
+  settingsWindowResponsiveScale = nextScale;
+  applyWebContentsScale(settingsWindow, nextScale);
+  if (!force && Math.abs(nextScale - previousScale) < 0.001) return;
+  const nextSize = scaleWindowSize(SETTINGS_WINDOW_SIZE, nextScale, SETTINGS_WINDOW_SIZE);
+  const [width, height] = settingsWindow.getSize();
+  if (Math.abs(width - nextSize.width) > 1 || Math.abs(height - nextSize.height) > 1) {
+    settingsWindow.setSize(nextSize.width, nextSize.height, false);
+  }
+}
 
 function normalizeWindowSize(size) {
   return {
@@ -53,6 +138,10 @@ function applyWindowPresentation(config = readConfig()) {
   // applying them only in the BrowserWindow constructor is not sufficient.
   mainWindow.setAlwaysOnTop(alwaysOnTop, 'floating');
   mainWindow.setOpacity(opacity);
+  mainWindow.setResizable(!config.layoutLocked);
+  mainWindow.setMovable(!config.layoutLocked);
+  bubbleWindow?.setAlwaysOnTop(alwaysOnTop, 'floating');
+  bubbleWindow?.setMovable(!config.layoutLocked);
 }
 
 function persistNativeWindowSize() {
@@ -61,7 +150,13 @@ function persistNativeWindowSize() {
     nativeWindowSizeTimer = null;
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const [width, height] = mainWindow.getSize();
-    const saved = writeConfig({ ...readConfig(), windowSize: { width, height } });
+    const scale = getWindowResponsiveScale(mainWindow);
+    const saved = writeConfig({
+      ...readConfig(),
+      // Persist the design-space size so restarting on another display does
+      // not apply the current display scale a second time.
+      windowSize: { width: width / scale, height: height / scale }
+    });
     if (settingsWindow && !settingsWindow.isDestroyed()) {
       settingsWindow.webContents.send('config-updated', saved);
     }
@@ -70,6 +165,7 @@ function persistNativeWindowSize() {
 
 function updateNativeWindowDrag(windowId) {
   const session = nativeDragSessions.get(windowId);
+  if (readConfig().layoutLocked) return false;
   const win = BrowserWindow.fromId(windowId);
   if (!session || !win || win.isDestroyed()) return false;
   try {
@@ -83,7 +179,8 @@ function updateNativeWindowDrag(windowId) {
     if (x === session.lastX && y === session.lastY) return true;
     session.lastX = x;
     session.lastY = y;
-    win.setPosition(x, y, false);
+    const bounded = clampBounds({ ...win.getBounds(), x, y }, screen.getDisplayNearestPoint(cursor).workArea);
+    win.setPosition(bounded.x, bounded.y, false);
     return true;
   } catch {
     return false;
@@ -98,9 +195,12 @@ function endNativeWindowDrag(event) {
   updateNativeWindowDrag(win.id);
   clearInterval(session.timer);
   nativeDragSessions.delete(win.id);
+  if (win === mainWindow) { const [x, y] = win.getPosition(); writeConfig({ windowPosition: { x, y } }); }
+  if (win === bubbleWindow) saveBubbleOffset();
 }
 
 function beginNativeWindowDrag(event) {
+  if (!trusted(event) || readConfig().layoutLocked) return;
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return;
   const previous = nativeDragSessions.get(win.id);
@@ -122,19 +222,32 @@ function flushWindowResize(windowId) {
   if (!pending || !win || win.isDestroyed()) return false;
   const session = windowResizeSessions.get(windowId);
   if (!session || !Number.isFinite(pending.cursorX) || !Number.isFinite(pending.cursorY)) {
-    const size = normalizeWindowSize(pending);
-    win.setSize(size.width, size.height, false);
+    const scale = getWindowResponsiveScale(win);
+    const size = normalizeWindowSize({
+      width: Number(pending.width) / scale,
+      height: Number(pending.height) / scale
+    });
+    const scaled = scaleWindowSize(size, scale);
+    win.setSize(scaled.width, scaled.height, false);
     return true;
   }
   const dx = pending.cursorX - session.cursorX;
   const dy = pending.cursorY - session.cursorY;
+  if (win === bubbleWindow) {
+    const scale = getWindowResponsiveScale(win), area = getDisplayForWindow(win).workArea;
+    const bounds = clampBounds({ ...win.getBounds(), width: Math.max(300 * scale, session.width + dx), height: Math.max(280 * scale, session.height + dy) }, area);
+    arrangingBubble = true; win.setBounds(bounds, false); arrangingBubble = false; return true;
+  }
   const growsLeft = session.edge.includes('w');
   const growsTop = session.edge.includes('n');
-  const width = Math.max(MAIN_WINDOW_LIMITS.minWidth, Math.round(session.width + (growsLeft ? -dx : session.edge.includes('e') ? dx : 0)));
-  const height = Math.max(MAIN_WINDOW_LIMITS.minHeight, Math.round(session.height + (growsTop ? -dy : session.edge.includes('s') ? dy : 0)));
+  const scale = getWindowResponsiveScale(win);
+  const minWidth = Math.round(MAIN_WINDOW_LIMITS.minWidth * scale);
+  const minHeight = Math.round(MAIN_WINDOW_LIMITS.minHeight * scale);
+  const width = Math.max(minWidth, Math.round(session.width + (growsLeft ? -dx : session.edge.includes('e') ? dx : 0)));
+  const height = Math.max(minHeight, Math.round(session.height + (growsTop ? -dy : session.edge.includes('s') ? dy : 0)));
   const x = Math.round(session.windowX + (growsLeft ? session.width - width : 0));
   const y = Math.round(session.windowY + (growsTop ? session.height - height : 0));
-  win.setBounds({ x, y, width, height }, false);
+  win.setBounds(clampBounds({ x, y, width, height }, getDisplayForWindow(win).workArea), false);
   return true;
 }
 
@@ -175,158 +288,32 @@ function endWindowResize(event) {
   if (!win || win.isDestroyed()) return false;
   flushWindowResize(win.id);
   windowResizeSessions.delete(win.id);
+  if (win === bubbleWindow) { const b = win.getBounds(), scale = getWindowResponsiveScale(win); broadcast(writeConfig({ bubbleSize: { width: b.width / scale, height: b.height / scale } })); saveBubbleOffset(); }
   win.webContents.send('resize-mode', false);
   return true;
 }
 
-function isPathInside(root, candidate) {
-  const relative = path.relative(root, candidate);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-function mimeTypeFor(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  return {
-    '.json': 'application/json; charset=utf-8',
-    '.moc3': 'application/octet-stream',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp'
-  }[ext] || 'application/octet-stream';
-}
-
-async function serveLive2D(request) {
-  const url = new URL(request.url);
-  const source = live2dRoots.get(url.hostname);
-  if (!source) return new Response('Unknown Live2D source', { status: 404 });
-
-  const relativePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
-  const filePath = path.resolve(source.root, relativePath);
-  if (!isPathInside(source.root, filePath) || !fs.existsSync(filePath)) {
-    return new Response('Live2D asset not found', { status: 404 });
-  }
-
-  if (source.virtualModel && relativePath.toLowerCase() === source.entryName.toLowerCase()) {
-    return new Response(JSON.stringify(source.virtualModel), {
-      headers: { 'content-type': 'application/json; charset=utf-8' }
-    });
-  }
-  const data = await fs.promises.readFile(filePath);
-  return new Response(data, { headers: { 'content-type': mimeTypeFor(filePath) } });
-}
-
-function createVirtualModel(modelPath, root) {
-  const model = JSON.parse(fs.readFileSync(modelPath, 'utf8'));
-  model.FileReferences = model.FileReferences || {};
-  const siblings = fs.readdirSync(root);
-  const expressions = siblings
-    .filter((name) => /\.exp3\.json$/i.test(name) && !/^水印\.exp3\.json$/i.test(name))
-    .map((name) => ({ Name: name.replace(/\.exp3\.json$/i, ''), File: name }));
-  const motions = siblings
-    .filter((name) => /\.motion3\.json$/i.test(name))
-    .map((name) => ({ File: name, FadeInTime: 500, FadeOutTime: 500 }));
-
-  if (!Array.isArray(model.FileReferences.Expressions) || model.FileReferences.Expressions.length === 0) {
-    if (expressions.length) model.FileReferences.Expressions = expressions;
-  }
-  if (!model.FileReferences.Motions || typeof model.FileReferences.Motions !== 'object') {
-    if (motions.length) model.FileReferences.Motions = { Desktop: motions };
-  }
-  return model;
-}
-
-function configPath() {
-  return path.join(app.getPath('userData'), 'assistant-config.json');
-}
-
-function defaultConfig() {
-  return {
-    alwaysOnTop: true,
-    showDesktopBorder: false,
-    layoutLocked: false,
-    opacity: 1,
-    bubbleFadeIn: false,
-    bubbleFadeDuration: 280,
-    refreshMinutes: 5,
-    dataSourceMode: 'demo',
-    bridgeUrl: '',
-    modelName: 'miku',
-    modelMode: 'live2d',
-    modelPath: path.join(__dirname, 'miku', 'miku.model3.json'),
-    modelScale: 1,
-    modelPosition: { x: 0, y: 0 },
-    bubblePosition: { x: 19, y: 12 },
-    bubbleSize: { width: 422, height: 365 },
-    windowSize: { ...MAIN_WINDOW_SIZE }
-  };
-}
-
-function readConfig() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
-    const config = { ...defaultConfig(), ...saved };
-    // Migrate the old built-in fallback once, preserving imported models.
-    if (config.modelMode === 'fallback' && fs.existsSync(defaultConfig().modelPath)) {
-      config.modelName = 'miku';
-      config.modelMode = 'live2d';
-      config.modelPath = defaultConfig().modelPath;
-    }
-    if (!config.bubblePosition || !Number.isFinite(Number(config.bubblePosition.x)) || !Number.isFinite(Number(config.bubblePosition.y))) {
-      config.bubblePosition = { ...defaultConfig().bubblePosition };
-    }
-    if (!config.modelPosition || !Number.isFinite(Number(config.modelPosition.x)) || !Number.isFinite(Number(config.modelPosition.y))) {
-      config.modelPosition = { ...defaultConfig().modelPosition };
-    }
-    config.showDesktopBorder = config.showDesktopBorder === true;
-    config.layoutLocked = config.layoutLocked === true;
-    config.bubbleFadeIn = config.bubbleFadeIn === true;
-    config.bubbleFadeDuration = Math.round(clampNumber(config.bubbleFadeDuration, 280, 100, 1200));
-    config.windowSize = normalizeWindowSize(config.windowSize);
-    config.bubbleSize = normalizeBubbleSize(config.bubbleSize);
-    return config;
-  } catch {
-    return defaultConfig();
-  }
-}
-
-function writeConfig(nextConfig) {
-  fs.mkdirSync(path.dirname(configPath()), { recursive: true });
-  const saved = { ...(nextConfig || {}) };
-  saved.alwaysOnTop = saved.alwaysOnTop !== false;
-  saved.opacity = clampNumber(saved.opacity, 1, 0.35, 1);
-  saved.showDesktopBorder = saved.showDesktopBorder === true;
-  saved.layoutLocked = saved.layoutLocked === true;
-  saved.bubbleFadeIn = saved.bubbleFadeIn === true;
-  saved.bubbleFadeDuration = Math.round(clampNumber(saved.bubbleFadeDuration, 280, 100, 1200));
-  saved.windowSize = normalizeWindowSize(saved.windowSize);
-  saved.bubbleSize = normalizeBubbleSize(saved.bubbleSize);
-  saved.modelPosition = {
-    x: Number.isFinite(Number(saved.modelPosition?.x)) ? Number(saved.modelPosition.x) : 0,
-    y: Number.isFinite(Number(saved.modelPosition?.y)) ? Number(saved.modelPosition.y) : 0
-  };
-  fs.writeFileSync(configPath(), JSON.stringify(saved, null, 2), 'utf8');
-  return saved;
-}
-
+function readConfig() { return settingsStore.read(); }
+function writeConfig(patch) { return settingsStore.save(patch); }
+function defaultConfig() { return defaults(); }
 function createWindow() {
   const display = screen.getPrimaryDisplay();
   const bounds = display.workArea;
   const config = readConfig();
-  const windowSize = normalizeWindowSize(config.windowSize);
+  mainWindowResponsiveScale = getResponsiveScale(display);
+  const windowSize = scaleWindowSize(config.windowSize, mainWindowResponsiveScale);
   const width = windowSize.width;
   const height = windowSize.height;
 
   mainWindow = new BrowserWindow({
     width,
     height,
-    x: Math.max(bounds.x + bounds.width - width - 36, bounds.x),
-    y: Math.max(bounds.y + bounds.height - height - 24, bounds.y),
+    ...clampBounds({ width, height, x: config.windowPosition?.x ?? bounds.x + bounds.width - width - 36, y: config.windowPosition?.y ?? bounds.y + bounds.height - height - 24 }, config.windowPosition ? screen.getDisplayNearestPoint(config.windowPosition).workArea : bounds),
     frame: false,
     transparent: true,
     resizable: true,
-    minWidth: MAIN_WINDOW_LIMITS.minWidth,
-    minHeight: MAIN_WINDOW_LIMITS.minHeight,
+    minWidth: Math.round(MAIN_WINDOW_LIMITS.minWidth * mainWindowResponsiveScale),
+    minHeight: Math.round(MAIN_WINDOW_LIMITS.minHeight * mainWindowResponsiveScale),
     show: false,
     hasShadow: false,
     skipTaskbar: false,
@@ -341,13 +328,17 @@ function createWindow() {
   });
 
   applyWindowPresentation(config);
+  applyWebContentsScale(mainWindow, mainWindowResponsiveScale);
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   mainWindow.on('resize', persistNativeWindowSize);
+  mainWindow.on('move', scheduleResponsiveScaleUpdate);
   mainWindow.once('ready-to-show', () => {
+    applyMainWindowResponsiveScale(true);
     applyWindowPresentation(readConfig());
     mainWindow.show();
   });
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { mainWindow = null; app.quit(); });
+  secureWindow(mainWindow);
 }
 
 function createSettingsWindow() {
@@ -357,16 +348,18 @@ function createSettingsWindow() {
     return settingsWindow;
   }
 
+  settingsWindowResponsiveScale = getResponsiveScale(getDisplayForWindow(mainWindow));
+  const settingsSize = scaleWindowSize(SETTINGS_WINDOW_SIZE, settingsWindowResponsiveScale, SETTINGS_WINDOW_SIZE);
   settingsWindow = new BrowserWindow({
-    width: 720,
-    height: 620,
-    minWidth: 640,
-    minHeight: 560,
+    width: settingsSize.width,
+    height: settingsSize.height,
+    minWidth: Math.round(640 * settingsWindowResponsiveScale),
+    minHeight: Math.round(560 * settingsWindowResponsiveScale),
     frame: false,
     resizable: true,
     show: false,
-    backgroundColor: '#0d1221',
-    title: 'Live2D Desktop Assistant 设置',
+    backgroundColor: '#edf3f9',
+    title: 'Live2D Desktop Assistant · 控制面板',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -375,105 +368,174 @@ function createSettingsWindow() {
     }
   });
 
+  applyWebContentsScale(settingsWindow, settingsWindowResponsiveScale);
   settingsWindow.loadFile(path.join(__dirname, 'src', 'settings.html'));
-  settingsWindow.once('ready-to-show', () => settingsWindow.show());
+  settingsWindow.on('move', scheduleResponsiveScaleUpdate);
+  settingsWindow.once('ready-to-show', () => {
+    applySettingsWindowResponsiveScale(true);
+    settingsWindow.show();
+  });
   settingsWindow.on('closed', () => { settingsWindow = null; });
+  secureWindow(settingsWindow);
   return settingsWindow;
 }
 
-app.whenReady().then(() => {
-  protocol.handle('live2d', serveLive2D);
-  ipcMain.handle('get-config', () => readConfig());
-  ipcMain.handle('get-default-model-path', () => defaultConfig().modelPath);
-  ipcMain.handle('save-config', (event, config) => {
-    // Settings from the renderer are also used for model scale/position and
-    // dialog state. Always take the live native size here so those saves can
-    // never replay a stale windowSize and resize the desktop window.
-    const nextConfig = { ...(config || {}) };
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const [width, height] = mainWindow.getSize();
-      nextConfig.windowSize = { width, height };
-    }
-    const saved = writeConfig(nextConfig);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      applyWindowPresentation(saved);
-      if (event.sender !== mainWindow.webContents) mainWindow.webContents.send('config-updated', saved);
-    }
-    if (settingsWindow && !settingsWindow.isDestroyed() && event.sender !== settingsWindow.webContents) {
-      settingsWindow.webContents.send('config-updated', saved);
-    }
-    return saved;
+function secureWindow(win) {
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', event => event.preventDefault());
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  win.webContents.on('render-process-gone', (_event, details) => console.error('Renderer exited:', details.reason));
+}
+function trusted(event, roles = ['main', 'panel', 'bubble']) {
+  const windows = { main: mainWindow, panel: settingsWindow, bubble: bubbleWindow };
+  return roles.some(role => windows[role]?.webContents === event.sender) && event.senderFrame === event.sender.mainFrame;
+}
+function handle(channel, roles, fn) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!trusted(event, roles)) throw new Error('IPC 来源被拒绝');
+    return fn(event, ...args);
   });
-  ipcMain.handle('load-live2d-model', (_event, modelPath) => {
-    const absolutePath = path.resolve(String(modelPath || ''));
-    if (!absolutePath.toLowerCase().endsWith('.model3.json')) {
-      throw new Error('请选择 .model3.json 模型入口文件');
-    }
-    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
-      throw new Error('找不到所选 Live2D 模型文件');
-    }
-
-    const token = crypto.randomUUID().replace(/-/g, '');
-    const root = path.dirname(absolutePath);
-    let virtualModel;
-    try {
-      virtualModel = createVirtualModel(absolutePath, root);
-    } catch {
-      throw new Error('模型入口文件不是有效的 JSON');
-    }
-    live2dRoots.set(token, {
-      root,
-      entryName: path.basename(absolutePath),
-      virtualModel
-    });
-    return {
-      modelUrl: `live2d://${token}/${encodeURIComponent(path.basename(absolutePath))}`,
-      modelPath: absolutePath,
-      modelName: path.basename(absolutePath).replace(/\.model3\.json$/i, ''),
-      actions: {
-        expressions: virtualModel.FileReferences.Expressions || [],
-        motions: Object.entries(virtualModel.FileReferences.Motions || {}).flatMap(([group, entries]) =>
-          entries.map((entry, index) => ({ group, index, file: entry.File })))
-      }
-    };
+}
+function broadcast(config = readConfig()) {
+  for (const win of [mainWindow, settingsWindow, bubbleWindow]) if (win && !win.isDestroyed()) win.webContents.send('config-updated', config);
+  return config;
+}
+function currentAnchor() {
+  const b = mainWindow.getBounds(), scale = getWindowResponsiveScale(mainWindow);
+  return { x: b.x + (modelAnchor?.x ?? b.width / scale / 2) * scale, y: b.y + (modelAnchor?.y ?? b.height / scale * .18) * scale };
+}
+function placeBubble() {
+  if (!bubbleWindow || !mainWindow || nativeDragSessions.has(bubbleWindow.id) || windowResizeSessions.has(bubbleWindow.id)) return;
+  const config = readConfig(), display = getDisplayForWindow(mainWindow), scale = getResponsiveScale(display);
+  arrangingBubble = true;
+  bubbleWindow.webContents.setZoomFactor(scale);
+  bubbleWindow.setBounds(bubbleBounds(currentAnchor(), config.bubbleSize, config.bubbleOffset, display.workArea, scale), false);
+  arrangingBubble = false;
+}
+function saveBubbleOffset() {
+  if (arrangingBubble || !bubbleWindow || !mainWindow) return;
+  const b = bubbleWindow.getBounds(), anchor = currentAnchor(), scale = getWindowResponsiveScale(bubbleWindow);
+  broadcast(writeConfig({ bubbleOffset: { x: (b.x + b.width / 2 - anchor.x) / scale, y: (b.y + b.height - anchor.y) / scale + 12 } }));
+}
+async function showBubble() {
+  if (!readConfig().selectedModelId || readConfig().bubbleDisplay === 'hidden') return false;
+  if (!bubbleWindow || bubbleWindow.isDestroyed()) {
+    bubbleWindow = new BrowserWindow({ width: 422, height: 365, frame: false, transparent: true, show: false,
+      resizable: false, hasShadow: false, skipTaskbar: true, backgroundColor: '#00000000',
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    secureWindow(bubbleWindow);
+    bubbleWindow.on('closed', () => { bubbleWindow = null; });
+    await bubbleWindow.loadFile(path.join(__dirname, 'src/index.html'), { query: { surface: 'bubble' } });
+  }
+  placeBubble(); applyWindowPresentation();
+  bubbleWindow.webContents.send('bubble-open'); bubbleWindow.show();
+  return true;
+}
+function selectModel(id) {
+  const meta = id ? modelManager.get(id) : null;
+  if (meta) modelManager.descriptor(id);
+  const saved = writeConfig({ selectedModelId: meta?.id || '', modelName: meta?.name || '', modelPath: meta?.path || '', modelMode: meta?.type || 'none' });
+  mainWindow?.showInactive();
+  if (!meta) bubbleWindow?.hide();
+  broadcast(saved); return saved;
+}
+function announceLibrary() {
+  for (const win of [mainWindow, settingsWindow, bubbleWindow]) win?.webContents.send('library-updated', modelManager.list());
+}
+function importModel(input) {
+  const result = modelManager.import(input);
+  for (const meta of result.imported) if (meta.path === path.join(__dirname, 'miku', 'miku.model3.json')) modelManager.get(meta.id).bundled = 'miku';
+  modelManager.save();
+  announceLibrary(); selectModel(result.imported[0].id); return result;
+}
+async function bridgeRead() {
+  const url = new URL(readConfig().bridgeUrl);
+  if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password) throw new Error('桥接仅支持明确配置的本机 HTTP(S) JSON 地址');
+  const response = await fetch(url, { redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error(`桥接返回 HTTP ${response.status}`);
+  let total = 0; const chunks = [];
+  for await (const chunk of response.body) { total += chunk.length; if (total > 1024 * 1024) throw new Error('桥接响应超过 1 MB'); chunks.push(Buffer.from(chunk)); }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+app.whenReady().then(async () => {
+  settingsStore = new SettingsStore(path.join(app.getPath('userData'), 'assistant-config.json'));
+  modelManager = new ModelManager(path.join(app.getPath('userData'), 'model-library.json'));
+  for (const meta of modelManager.library) if (meta.bundled === 'miku') meta.path = path.join(__dirname, 'miku', 'miku.model3.json');
+  modelManager.save();
+  const legacy = readConfig();
+  if (legacy.selectedModelId) {
+    try { const meta = modelManager.get(legacy.selectedModelId); writeConfig({ modelPath: meta.path }); }
+    catch { writeConfig({ selectedModelId: '', modelPath: '', modelMode: 'none', modelName: '' }); }
+  }
+  if (!legacy.selectedModelId && legacy.modelPath && fs.existsSync(legacy.modelPath)) {
+    try { const model = modelManager.import(legacy.modelPath).imported[0]; writeConfig({ selectedModelId: model.id, modelMode: model.type }); }
+    catch (error) { console.error('旧模型迁移失败', error.message); }
+  }
+  for (const name of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(name, scheduleResponsiveScaleUpdate);
+  protocol.handle('live2d', request => modelManager.serve(request));
+  const all = ['main', 'panel', 'bubble'];
+  handle('get-config', all, () => readConfig());
+  handle('save-config', all, (event, patch) => {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('配置格式无效');
+    const current = readConfig(), next = { ...patch };
+    for (const key of ['modelPath', 'modelName', 'modelMode', 'selectedModelId', 'schemaVersion', 'windowPosition']) delete next[key];
+    if (!trusted(event, ['panel'])) for (const key of ['windowSize', 'autoStart', 'bridgeUrl', 'dataSourceMode']) delete next[key];
+    if (current.layoutLocked) for (const key of ['windowSize', 'modelPosition', 'modelScale', 'bubbleSize', 'bubblePosition', 'bubbleOffset']) delete next[key];
+    if (next.autoStart !== undefined && next.autoStart !== current.autoStart) app.setLoginItemSettings({ openAtLogin: Boolean(next.autoStart), path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: app.isPackaged ? [] : [app.getAppPath()] });
+    const saved = writeConfig(next);
+    applyWindowPresentation(saved);
+    if (next.windowSize) applyMainWindowResponsiveScale(true);
+    placeBubble();
+    if (saved.bubbleDisplay === 'hidden') bubbleWindow?.hide();
+    if (saved.bubbleDisplay === 'always') void showBubble();
+    return broadcast(saved);
   });
-  ipcMain.handle('open-chatgpt', async () => {
-    await shell.openExternal('https://chatgpt.com');
-    return true;
+  handle('reset-settings', ['panel'], () => {
+    const c = readConfig();
+    if (c.autoStart) app.setLoginItemSettings({ openAtLogin: false, path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: app.isPackaged ? [] : [app.getAppPath()] });
+    const saved = writeConfig({ ...defaults(), selectedModelId: c.selectedModelId, modelPath: c.modelPath, modelName: c.modelName, modelMode: c.modelMode });
+    applyWindowPresentation(saved); applyMainWindowResponsiveScale(true); placeBubble(); return broadcast(saved);
   });
-  ipcMain.handle('open-settings', () => {
-    createSettingsWindow();
-    return true;
+  handle('list-models', all, () => modelManager.list());
+  handle('import-model', ['panel'], (_event, input) => { if (typeof input !== 'string' || input.length > 4096) throw new Error('导入路径无效'); return importModel(input); });
+  handle('pick-model', ['panel'], async (_event, mode) => {
+    const result = await dialog.showOpenDialog(settingsWindow, { title: '导入完整 Live2D 模型', properties: mode === 'directory' ? ['openDirectory'] : ['openFile'], filters: [{ name: 'Live2D / 图片', extensions: ['json', 'model', 'moc3', 'png', 'jpg', 'jpeg', 'webp'] }] });
+    return result.canceled ? null : importModel(result.filePaths[0]);
   });
-  ipcMain.on('begin-window-drag', beginNativeWindowDrag);
-  ipcMain.on('end-window-drag', endNativeWindowDrag);
-  ipcMain.on('resize-window', queueWindowResize);
-  ipcMain.on('end-window-resize', (event) => {
-    endWindowResize(event);
+  handle('add-bundled-model', ['panel'], () => importModel(path.join(__dirname, 'miku/miku.model3.json')));
+  handle('select-model', ['panel'], (_event, id) => selectModel(String(id || '')));
+  handle('remove-model', ['panel'], (_event, id) => { modelManager.remove(id); if (readConfig().selectedModelId === id) selectModel(''); announceLibrary(); return true; });
+  handle('rescan-model', ['panel'], (_event, id) => { const result = modelManager.import(modelManager.get(id).path); announceLibrary(); if (readConfig().selectedModelId === id) mainWindow.webContents.send('reload-model'); return result; });
+  handle('reload-model', ['panel'], () => { mainWindow.webContents.send('reload-model'); return true; });
+  handle('model-descriptor', all, (_event, id) => modelManager.descriptor(id || readConfig().selectedModelId));
+  handle('open-library-folder', ['panel'], async () => shell.openPath(path.dirname(modelManager.file)));
+  handle('play-action', ['panel', 'bubble'], async (_event, action, loop) => {
+    const meta = modelManager.get(readConfig().selectedModelId);
+    const resolved = actionCatalog.resolve(meta, action);
+    if (!resolved) throw new Error('动作不属于当前模型');
+    mainWindow.webContents.send('play-action', { action: resolved, loop: loop === true }); return true;
   });
-  ipcMain.handle('begin-window-resize', beginWindowResize);
-  ipcMain.handle('end-window-resize', endWindowResize);
-  ipcMain.handle('close-settings', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('resize-mode', false);
-    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
-    return true;
+  handle('stop-action', all, () => { mainWindow.webContents.send('stop-action'); return true; });
+  handle('motion-status', ['main'], (_event, status) => {
+    motionStatus = { ok: status?.ok === true, message: String(status?.message || '').slice(0, 500) };
+    for (const win of [settingsWindow, bubbleWindow]) win?.webContents.send('motion-status', motionStatus);
   });
-  ipcMain.handle('hide-assistant', () => {
-    if (mainWindow) mainWindow.hide();
-    return true;
-  });
-  ipcMain.handle('quit-assistant', () => {
-    app.quit();
-    return true;
-  });
-  createWindow();
-  createSettingsWindow();
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+  handle('model-anchor', ['main'], (_event, point) => { if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) { modelAnchor = { x: point.x, y: point.y }; placeBubble(); } return true; });
+  handle('show-bubble', ['main', 'panel'], () => showBubble());
+  handle('hide-bubble', ['bubble'], () => { bubbleWindow?.hide(); return true; });
+  handle('bridge-read', all, bridgeRead);
+  handle('open-chatgpt', all, async () => { await shell.openExternal('https://chatgpt.com'); return true; });
+  handle('open-settings', all, () => { createSettingsWindow(); return true; });
+  handle('close-settings', ['panel'], () => { settingsWindow?.close(); return true; });
+  handle('quit-assistant', all, () => { app.quit(); return true; });
+  handle('hide-assistant', all, () => { mainWindow?.hide(); bubbleWindow?.hide(); return true; });
+  handle('show-assistant', all, () => { mainWindow?.show(); return true; });
+  for (const [channel, fn] of Object.entries({ 'begin-window-drag': beginNativeWindowDrag, 'end-window-drag': endNativeWindowDrag, 'resize-window': queueWindowResize })) ipcMain.on(channel, (event, arg) => { if (trusted(event, ['main', 'bubble'])) fn(event, arg); });
+  handle('begin-window-resize', ['main', 'bubble'], beginWindowResize);
+  handle('end-window-resize', ['main', 'bubble'], endWindowResize);
+  createWindow(); createSettingsWindow();
+  if (process.argv.includes('--verify') && process.env.LDA_TEST_PROFILE) require('./scripts/verify-electron.cjs')({ app, getWindows: () => ({ mainWindow, settingsWindow, bubbleWindow }), modelManager, readConfig, writeConfig, selectModel, showBubble, motionStatus: () => motionStatus });
+}).catch(error => { dialog.showErrorBox('助手启动失败', error.message); app.quit(); });
+app.on('before-quit', () => { for (const session of nativeDragSessions.values()) clearInterval(session.timer); });
+app.on('window-all-closed', () => app.quit());
+app.on('activate', () => { if (mainWindow) { mainWindow.show(); createSettingsWindow(); } });

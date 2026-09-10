@@ -1,54 +1,8 @@
 <!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Live2D Desktop Assistant 设置</title>
-    <link rel="stylesheet" href="./settings.css" />
-  </head>
-  <body>
-    <main class="settings-shell">
-      <header class="titlebar">
-        <div class="brand-mark">✦</div>
-        <div><div class="title">Live2D Desktop Assistant</div><div class="subtitle">首次启动设置 · 桌面宠物偏好</div></div>
-        <button id="closeButton" class="window-button" aria-label="关闭设置">×</button>
-      </header>
-      <div class="content">
-        <aside class="sidebar">
-          <div class="side-label">SETUP</div>
-          <button class="side-link active">基础设置</button>
-          <button class="side-link">模型外观</button>
-          <button class="side-link">数据与隐私</button>
-          <div class="side-tip"><span class="tip-dot"></span><span>助手会以透明悬浮层运行，不遮挡桌面内容。</span></div>
-        </aside>
-        <section class="form-area">
-          <div class="hero"><span class="hero-kicker">WELCOME BACK</span><h1>先把助手调成你喜欢的样子。</h1><p>这些设置会保存到本机，之后可以从宠物菜单再次打开。</p></div>
-          <div class="section-card">
-            <div class="section-heading"><span><b>模型与显示</b><small>控制宠物的外观与存在感</small></span><span class="section-number">01</span></div>
-            <div class="form-row"><label for="modelName">当前模型</label><div class="control-pair"><input id="modelName" type="text" readonly /><button id="importButton" class="outline-button">导入</button></div></div>
-            <div class="form-row"><label for="opacity">透明度</label><div class="range-pair"><input id="opacity" type="range" min="0.35" max="1" step="0.05" /><output id="opacityValue">100%</output></div></div>
-            <div class="form-row"><span class="label-text">始终置顶</span><label class="switch"><input id="alwaysOnTop" type="checkbox" /><span></span></label></div>
-            <div class="form-row"><span class="label-text">打开可见桌宠边框</span><label class="switch"><input id="showDesktopBorder" type="checkbox" /><span></span></label></div>
-            <div class="form-row"><span class="label-text">锁定桌宠布局</span><label class="switch"><input id="layoutLocked" type="checkbox" /><span></span></label></div>
-          </div>
-          <div class="section-card">
-            <div class="section-heading"><span><b>聊天框设置</b><small>控制对话气泡出现时的动效</small></span><span class="section-number">02</span></div>
-            <div class="form-row"><span class="label-text">淡入</span><label class="switch"><input id="bubbleFadeIn" type="checkbox" /><span></span></label></div>
-            <div id="bubbleFadeDurationRow" class="form-row dependent-row"><label for="bubbleFadeDuration">淡入时间</label><div class="range-pair"><input id="bubbleFadeDuration" type="range" min="100" max="1200" step="50" /><output id="bubbleFadeDurationValue">280 ms</output></div></div>
-          </div>
-          <div class="section-card">
-            <div class="section-heading"><span><b>数据刷新</b><small>第一版默认使用本地演示数据</small></span><span class="section-number">03</span></div>
-            <div class="form-row"><label for="refreshMinutes">刷新间隔</label><select id="refreshMinutes"><option value="1">每 1 分钟</option><option value="5">每 5 分钟</option><option value="15">每 15 分钟</option></select></div>
-            <div class="form-row"><label for="dataSourceMode">数据来源</label><select id="dataSourceMode"><option value="demo">本地演示快照</option><option value="bridge">本地桥接 JSON</option></select></div>
-            <div class="form-row"><label for="bridgeUrl">桥接地址</label><input id="bridgeUrl" type="url" placeholder="http://127.0.0.1:8765/status.json" /></div>
-            <div class="source-note"><span class="source-icon">◒</span><div><b>本地模型导入</b><p>选择完整的 .model3.json 后，助手会从同一文件夹读取 moc3、纹理和物理文件。</p></div></div>
-          </div>
-          <footer class="actions"><span id="savedState">尚未保存</span><div><button id="laterButton" class="ghost-button">稍后设置</button><button id="saveButton" class="primary-button">保存并开始</button></div></footer>
-        </section>
-      </div>
-    </main>
-    <input id="modelFile" type="file" accept="image/png,image/webp,image/jpeg,.json,.model3.json" hidden />
-    <script src="./settings.js"></script>
-  </body>
-</html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' live2d: data:; style-src 'self' 'unsafe-inline'; script-src 'self';"><title>Live2D Desktop Assistant · 控制面板</title><link rel="stylesheet" href="./settings.css"></head>
+<body><div class="panel-shell"><aside class="sidebar"><div class="brand"><span class="brand-mark">L</span><div>Live2D<small>DESKTOP ASSISTANT</small></div></div><div class="sidebar-caption">控制中心</div><nav id="navigation"></nav><div class="sidebar-bottom"><span class="online-dot"></span> 本地运行<span class="version">1.0.3</span><button id="quit" class="quiet">退出助手</button></div></aside>
+<div class="workspace"><header class="titlebar"><div><strong id="pageTitle">模型</strong><span id="pageSubtitle">为桌面选择一位伙伴</span></div><div class="title-actions"><button id="showPet">显示桌宠</button><button id="closePanel" aria-label="关闭控制面板">×</button></div></header>
+<div class="toolbar"><button id="refresh" title="重新读取模型库">↻ 刷新</button><button id="random">随机</button><button id="clear">清除选择</button><form id="searchForm"><input id="search" placeholder="搜索模型名称或动作" aria-label="搜索"><button type="submit">搜索</button></form><select id="filter" aria-label="筛选模型"><option value="all">全部类型</option><option value="live2d">Live2D</option><option value="image">静态图片</option></select><button id="library">模型库管理</button></div>
+<div id="notice" role="status" aria-live="polite">准备就绪</div><main id="content"></main><footer class="panel-footer"><span>模型与设置保存在本机</span><span id="libraryCount">0 个模型</span></footer></div></div>
+<dialog id="confirmDialog"><h2 id="confirmTitle"></h2><p id="confirmText"></p><div class="button-row"><button id="cancelConfirm">取消</button><button id="acceptConfirm" class="primary">确认</button></div></dialog>
+<script src="./action-catalog.js"></script><script src="./control-panel.js"></script><script src="./settings.js"></script></body></html>

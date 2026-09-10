@@ -59,9 +59,9 @@
 
     async read() {
       if (!this.url) throw new Error('尚未配置本地数据桥接地址');
-      const response = await fetch(this.url, { cache: 'no-store', headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error(`数据桥接返回 HTTP ${response.status}`);
-      return normalizeSnapshot(await response.json());
+      const raw = await window.desktopAPI.bridgeRead();
+      if (!Number.isFinite(raw?.usage?.short?.used) || !Number.isFinite(raw?.usage?.week?.used)) throw new Error('桥接 JSON 缺少 usage.short.used / usage.week.used 数值');
+      return normalizeSnapshot(raw);
     }
   }
 

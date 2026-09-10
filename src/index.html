@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' live2d: http://127.0.0.1:* http://localhost:* https://127.0.0.1:* https://localhost:* https://cdn.jsdelivr.net https://cubism.live2d.com; img-src 'self' data: blob: live2d:; style-src 'self' 'unsafe-inline'; script-src 'self' https://cdn.jsdelivr.net https://cubism.live2d.com; worker-src 'self' blob:;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' live2d:  ; img-src 'self' data: blob: live2d:; style-src 'self' 'unsafe-inline'; script-src 'self' ; worker-src 'self' blob:;" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Live2D Desktop Assistant</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -14,7 +14,7 @@
         <div class="status-orbit orbit-b"></div>
         <button id="petButton" class="pet-button" aria-label="唤醒助手">
           <canvas id="live2dCanvas" class="live2d-canvas" aria-hidden="true"></canvas>
-          <span id="petModel" class="pet-model" data-model="fallback">
+          <span id="petModel" class="pet-model live2d-hidden" data-model="fallback">
             <span class="antenna antenna-left"></span>
             <span class="antenna antenna-right"></span>
             <span class="pet-ear ear-left"></span>
@@ -77,6 +77,7 @@
     </main>
     <input id="modelFile" type="file" accept="image/png,image/webp,image/jpeg,.json,.model3.json" hidden />
     <script src="./data-provider.js"></script>
+    <script src="./motion-manager.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

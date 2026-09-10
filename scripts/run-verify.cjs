@@ -1,0 +1,11 @@
+const fs = require('fs'), path = require('path'), os = require('os'), { spawn } = require('child_process');
+const profile = process.env.LDA_TEST_PROFILE || fs.mkdtempSync(path.join(os.tmpdir(), 'lda-verify-'));
+const exe = process.argv[2] ? path.resolve(process.argv[2]) : require('electron');
+const args = process.argv[2] ? ['--verify'] : [path.resolve('.'), '--verify'];
+const output = path.resolve('dist/verification'); fs.mkdirSync(output,{recursive:true});
+const env = { ...process.env, LDA_TEST_PROFILE: profile, LDA_VERIFY_OUTPUT: output }; delete env.ELECTRON_RUN_AS_NODE;
+console.log(`Verification profile: ${profile}`);
+const child=spawn(exe,args,{env,stdio:'inherit',windowsHide:true});
+let timedOut=false;
+const timer=setTimeout(()=>{ timedOut=true; child.kill(); console.error('Verification timed out');process.exitCode=1; },process.env.LDA_VERIFY_KEEP_OPEN==='1' ? 900000 : 120000);
+child.on('exit',code=>{clearTimeout(timer);process.exitCode=timedOut ? 1 : code || 0;});

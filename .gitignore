@@ -3,3 +3,4 @@ dist/
 build/
 .npm-cache/
 *.log
+/Live2D-Desktop-Assistant.exe

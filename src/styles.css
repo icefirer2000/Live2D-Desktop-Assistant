@@ -165,3 +165,34 @@ body.layout-locked .bubble-drag-handle:active { cursor: grabbing; }
 @keyframes float { 0%, 100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, -7px); } }
 @keyframes blink { 0%, 44%, 48%, 100% { transform: scaleY(1); } 46% { transform: scaleY(.1); } }
 @keyframes orbit { from { transform: rotate(0deg) translateX(126px) rotate(0deg); } to { transform: rotate(360deg) translateX(126px) rotate(-360deg); } }
+/* Independent transparent chat surface; all child content scrolls within its bounds. */
+.pet-model,.status-orbit,.pet-glow{display:none!important}
+.model-status{max-width:90%;white-space:normal;overflow-wrap:anywhere;font-size:12px;border-radius:9px}
+.bubble-surface #modelStage,.bubble-surface .window-resize-zones,.bubble-surface #desktopBorder{display:none!important}
+.bubble-surface .bubble{left:0!important;top:0!important;width:100%!important;height:100%!important;min-width:0;min-height:0;max-width:none;max-height:none;overflow:hidden;padding:22px 17px 25px;color:#243e5c;--ink:#243e5c;--muted:#607992;--line:#b8cde366;--cyan:#285f93;--blue:#366599;--green:#378a70}
+.bubble-surface .bubble-tail,.bubble-surface .bubble::before{display:none}
+.bubble-surface .bubble-main{overflow:auto}
+.bubble-surface .welcome-copy{min-height:105px;padding:12px 6px}
+.bubble-surface .welcome-copy h1{font-size:calc(var(--chat-font,14px) * 1.55);line-height:1.4}
+.bubble-surface .welcome-copy p{font-size:var(--chat-font,14px);color:#607992}
+.bubble-surface .menu-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-height:140px}
+.bubble-surface .menu-card{padding:10px;gap:4px;background:#dce9f34d;color:var(--ink)}
+.bubble-surface .menu-card span:not(.menu-icon){font-size:var(--chat-font,14px)}
+.bubble-surface .menu-card small{font-size:11px;color:#607992}
+.bubble-surface .action-toolbar{flex-shrink:0;margin-top:6px}
+.bubble-surface .action-toolbar button{color:#285780;border-color:#acbfd8}
+.bubble-surface .bubble-footer{flex-shrink:0;padding-right:23px;font-size:10px;color:#607992}
+.bubble-surface .bubble-drag-handle{left:0;top:0;right:44px;height:24px}
+.bubble-surface .bubble-close-button{color:#55718d}
+.bubble-surface .bubble-resize-handle{background:#dde8f3;color:#2f567a;border-color:#b5cbe1}
+.bubble-surface .detail-view{font-size:var(--chat-font,14px)}
+body.layout-locked .pet-button,body.layout-locked .live2d-canvas.visible{cursor:pointer}
+body.layout-locked .bubble-drag-handle{cursor:default}
+body[data-theme=dark].bubble-surface .bubble{--ink:#edf5ff;--muted:#d0def0;color:var(--ink);background:#22344af5!important}
+body[data-theme=dark].bubble-surface .welcome-copy p,body[data-theme=dark].bubble-surface .menu-card small{color:#c7d6e8}
+.bubble-surface .welcome-copy{flex:1 0 85px;min-height:85px;padding:6px}
+.bubble-surface .menu-grid{flex:0 0 auto;min-height:0}
+.bubble-surface .menu-card{min-height:72px;padding:8px 10px}
+.bubble-surface .menu-card>*{flex-shrink:0;line-height:1.3}
+.bubble-surface .action-toolbar{max-height:46px;min-height:42px}
+.bubble-surface .action-toolbar:empty{display:none}
